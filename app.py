@@ -106,38 +106,84 @@ class SimplexSolver:
     
     def parse_coefficients(self, input_str, expected_count):
         """Parse coefficients from user input - handles both formats"""
-        # Remove spaces for consistent parsing
-        input_str = input_str.replace(' ', '')
+        # Clean the input string
+        input_str = input_str.strip()
         
-        # Try to parse as expression (like 2x1+5x2)
+        # If it contains 'x', parse as mathematical expression
         if 'x' in input_str.lower():
-            coeffs = [0] * expected_count
-            # Match patterns like 2x1, -3x2, x1, -x2, +5x3
-            pattern = r'([+-]?\d*\.?\d*)x(\d+)'
-            matches = re.findall(pattern, input_str.lower())
-            
-            for coeff_str, var_num in matches:
-                if coeff_str == '' or coeff_str == '+':
-                    coeff = 1
-                elif coeff_str == '-':
-                    coeff = -1
-                else:
-                    coeff = float(coeff_str)
-                
-                var_idx = int(var_num) - 1
-                if 0 <= var_idx < expected_count:
-                    coeffs[var_idx] = coeff
-            
-            return coeffs
+            return self._parse_expression(input_str, expected_count)
         else:
             # Parse as space-separated numbers
-            parts = input_str.split()
-            if len(parts) != expected_count:
-                # If not enough coefficients, pad with zeros
-                coeffs = list(map(float, parts))
-                coeffs.extend([0] * (expected_count - len(parts)))
-                return coeffs
-            return list(map(float, parts))
+            return self._parse_space_separated(input_str, expected_count)
+    
+    def _parse_expression(self, input_str, expected_count):
+        """Parse mathematical expressions like '2x1 + 3x2 - x3'"""
+        coeffs = [0.0] * expected_count
+        
+        # Remove all spaces for easier parsing
+        clean_str = input_str.replace(' ', '')
+        
+        # Handle cases where expression starts without sign (assume positive)
+        if clean_str and clean_str[0].isdigit() or clean_str[0] == 'x':
+            clean_str = '+' + clean_str
+        
+        # Regular expression to match terms like +2x1, -3x2, +x3, -x4, etc.
+        pattern = r'([+-]?)(\d*\.?\d*)(x\d+)'
+        
+        # Find all matches
+        matches = re.finditer(pattern, clean_str)
+        
+        for match in matches:
+            sign = match.group(1) or '+'
+            number_str = match.group(2)
+            var_str = match.group(3)
+            
+            # Extract variable number
+            var_num = int(var_str[1:])  # Remove 'x' and convert to int
+            
+            # Skip if variable number is out of range
+            if var_num < 1 or var_num > expected_count:
+                continue
+            
+            # Determine coefficient value
+            if number_str == '':
+                # No number specified (e.g., +x1, -x2)
+                coeff = 1.0
+            else:
+                coeff = float(number_str)
+            
+            # Apply sign
+            if sign == '-':
+                coeff = -coeff
+            
+            # Assign to the correct position (variables are 1-indexed)
+            coeffs[var_num - 1] = coeff
+        
+        return coeffs
+    
+    def _parse_space_separated(self, input_str, expected_count):
+        """Parse space-separated numbers"""
+        if not input_str.strip():
+            return [0.0] * expected_count
+        
+        parts = input_str.split()
+        coeffs = []
+        
+        for part in parts:
+            try:
+                coeffs.append(float(part))
+            except ValueError:
+                st.error(f"Invalid number: '{part}'. Please enter valid numbers.")
+                return [0.0] * expected_count
+        
+        # Pad with zeros if not enough coefficients provided
+        if len(coeffs) < expected_count:
+            coeffs.extend([0.0] * (expected_count - len(coeffs)))
+        # Truncate if too many coefficients provided
+        elif len(coeffs) > expected_count:
+            coeffs = coeffs[:expected_count]
+        
+        return coeffs
     
     def build_tableau(self, constraints, constraint_types, rhs_values):
         """Build the initial simplex tableau"""
@@ -475,29 +521,28 @@ def main():
         - Supported inequalities: `<=`, `>=`, `=`
         
         **Input Formats:**
-        - Space-separated: `2 5 1`
-        - Expression: `2x1 + 5x2 + x3`
+        - **Space-separated**: `2 5 1` 
+        - **Mathematical expression**: `2x1 + 5x2 + x3`
+        - **Mixed**: `2x1 + 3x2 - 1x3` or `2x1+3x2-1x3`
         """)
         
-        st.markdown("### 💡 Tips")
+        st.markdown("### 💡 Valid Expression Examples")
         st.markdown("""
-        - Ensure RHS values are non-negative
-        - Use '=' for equality constraints
-        - The solver automatically handles:
-          - Slack variables (s)
-          - Surplus variables (surp)
-          - Artificial variables (A)
+        - `2x1 + 3x2 - x3`
+        - `x1 - 2x2 + 5x3`
+        - `3x1+2x2-4x3` (no spaces)
+        - `-x1 + x2 - x3`
+        - `2x1 - 3x2`
         """)
         
-        st.markdown("### 🔍 Quick Examples")
-        example = st.selectbox("Load example:", 
-                             ["Select...", "Maximization Example", "Minimization Example"])
-        
-        if example == "Maximization Example":
-            st.session_state.example = "max"
-        elif example == "Minimization Example":
-            st.session_state.example = "min"
-    
+        st.markdown("### ⚠️ Common Issues")
+        st.markdown("""
+        - Don't use `*` between coefficient and variable
+        - Include `+` or `-` between terms
+        - Variable names must be `x1`, `x2`, etc.
+        - Ensure RHS values are non-negative
+        """)
+
     # Main content
     col1, col2 = st.columns([1, 1])
     
@@ -516,17 +561,41 @@ def main():
                             horizontal=True, key="obj_format")
         
         if obj_format == "Space-separated numbers":
-            default_obj = "3 2" if getattr(st.session_state, 'example', None) == "max" else "4 1"
-            obj_input = st.text_input(f"Enter coefficients for x₁ to x{num_vars}:", 
-                                    value=default_obj,
-                                    help=f"Enter {num_vars} numbers separated by spaces",
-                                    key="obj_input")
+            obj_input = st.text_input(
+                f"Enter coefficients for x₁ to x{num_vars}:", 
+                value="3 2",
+                help=f"Enter {num_vars} numbers separated by spaces. Example: '3 2' for 3x₁ + 2x₂",
+                key="obj_input"
+            )
+            if obj_input:
+                st.caption(f"Interpreted as: {obj_input.replace(' ', 'x₁ + ')}x{num_vars}")
         else:
-            default_expr = "3x1 + 2x2" if getattr(st.session_state, 'example', None) == "max" else "4x1 + x2"
-            obj_input = st.text_input("Enter objective function:", 
-                                    value=default_expr,
-                                    help="Example: 2x1 + 3x2 - x3",
-                                    key="obj_expr")
+            obj_input = st.text_input(
+                "Enter objective function:", 
+                value="3x1 + 2x2",
+                help="Example: 2x1 + 3x2 - x3 or 2x1+3x2-1x3",
+                key="obj_expr"
+            )
+            if obj_input:
+                st.caption("Make sure to use format like: 2x1 + 3x2 - x3")
+
+        # Show parsing preview
+        if obj_input:
+            try:
+                preview_solver = SimplexSolver()
+                preview_coeffs = preview_solver.parse_coefficients(obj_input, num_vars)
+                preview_terms = []
+                for i, coeff in enumerate(preview_coeffs):
+                    if abs(coeff) > 1e-10:
+                        if i == 0:
+                            preview_terms.append(f"{coeff:g}x{i+1}")
+                        else:
+                            sign = "+" if coeff >= 0 else "-"
+                            preview_terms.append(f"{sign} {abs(coeff):g}x{i+1}")
+                if preview_terms:
+                    st.info(f"**Parsed as:** {' '.join(preview_terms)}")
+            except:
+                pass
     
     with col2:
         st.markdown('<div class="sub-header">📋 Constraints</div>', unsafe_allow_html=True)
@@ -535,53 +604,54 @@ def main():
         constraint_types = []
         rhs_values = []
         
-        # Default constraints based on example
-        if getattr(st.session_state, 'example', None) == "max":
-            default_constraints = ["2 1", "2 3", "3 1"]
-            default_inequalities = ["<=", "<=", "<="]
-            default_rhs = [18, 42, 24]
-        elif getattr(st.session_state, 'example', None) == "min":
-            default_constraints = ["3 1", "4 3", "1 2"]
-            default_inequalities = ["=", ">=", "<="]
-            default_rhs = [3, 6, 4]
-        else:
-            default_constraints = ["1" for _ in range(num_constraints)]
-            default_inequalities = ["<=" for _ in range(num_constraints)]
-            default_rhs = [10.0 for _ in range(num_constraints)]
-        
         for i in range(num_constraints):
             st.markdown(f"**Constraint {i+1}**")
             col_a, col_b, col_c = st.columns([3, 1, 2])
             
             with col_a:
                 if obj_format == "Space-separated numbers":
-                    coeff_input = st.text_input(f"Coefficients {i+1}", 
-                                              value=default_constraints[i] if i < len(default_constraints) else "1",
-                                              key=f"coeff_{i}",
-                                              label_visibility="collapsed")
+                    coeff_input = st.text_input(
+                        f"Coefficients {i+1}", 
+                        value="2 1" if i == 0 else "1 1",
+                        key=f"coeff_{i}",
+                        label_visibility="collapsed",
+                        help=f"Enter {num_vars} numbers separated by spaces"
+                    )
                 else:
-                    default_expr = f"{default_constraints[i].replace(' ', 'x1 + ')}x{num_vars}" if i < len(default_constraints) else " + ".join([f"x{j+1}" for j in range(num_vars)])
-                    coeff_input = st.text_input(f"Expression {i+1}", 
-                                              value=default_expr,
-                                              key=f"expr_{i}",
-                                              label_visibility="collapsed",
-                                              help="Example: 2x1 + 3x2")
+                    coeff_input = st.text_input(
+                        f"Expression {i+1}", 
+                        value="2x1 + 1x2" if i == 0 else "1x1 + 1x2",
+                        key=f"expr_{i}",
+                        label_visibility="collapsed",
+                        help="Example: 2x1 + 3x2 - x3"
+                    )
             
             with col_b:
-                inequality = st.selectbox("Inequality", ["<=", ">=", "="], 
-                                        index=0 if default_inequalities[i] == "<=" else (1 if default_inequalities[i] == ">=" else 2) if i < len(default_inequalities) else 0,
-                                        key=f"ineq_{i}", label_visibility="collapsed")
+                inequality = st.selectbox(
+                    "Inequality", 
+                    ["<=", ">=", "="], 
+                    key=f"ineq_{i}", 
+                    label_visibility="collapsed"
+                )
             
             with col_c:
-                rhs = st.number_input("RHS", value=default_rhs[i] if i < len(default_rhs) else 10.0, 
-                                    key=f"rhs_{i}", label_visibility="collapsed")
+                rhs = st.number_input(
+                    "RHS", 
+                    value=18.0 if i == 0 else 10.0, 
+                    key=f"rhs_{i}", 
+                    label_visibility="collapsed"
+                )
             
             constraints.append(coeff_input)
             constraint_types.append(inequality)
             rhs_values.append(rhs)
-    
+
     # Solve button
     if st.button("🚀 Solve using Simplex Method", use_container_width=True, type="primary"):
+        if not obj_input.strip():
+            st.error("❌ Please enter the objective function coefficients.")
+            return
+            
         try:
             # Initialize solver
             solver = SimplexSolver()
@@ -647,7 +717,7 @@ def main():
             
         except Exception as e:
             st.error(f"❌ Error solving the problem: {str(e)}")
-            st.info("💡 Please check your input format and try again. Make sure all coefficients are valid numbers.")
+            st.info("💡 Please check your input format. For mathematical expressions, use format like: '2x1 + 3x2 - x3'")
 
     # Examples section
     with st.expander("📚 Example Problems", expanded=False):
@@ -662,8 +732,14 @@ Subject to:
   2x1 + 3x2 ≤ 42
   3x1 + x2 ≤ 24
   x1, x2 ≥ 0
+
+Input format (expression):
+Objective: 3x1 + 2x2
+Constraints: 
+  2x1 + 1x2 <= 18
+  2x1 + 3x2 <= 42  
+  3x1 + 1x2 <= 24
             """)
-            st.write("**Solution:** x₁ = 3, x₂ = 12, Z = 33")
         
         with col2:
             st.markdown("**Example 2: Minimization**")
@@ -674,8 +750,14 @@ Subject to:
   4x1 + 3x2 ≥ 6
   x1 + 2x2 ≤ 4
   x1, x2 ≥ 0
+
+Input format (expression):
+Objective: 4x1 + 1x2
+Constraints:
+  3x1 + 1x2 = 3
+  4x1 + 3x2 >= 6
+  1x1 + 2x2 <= 4
             """)
-            st.write("**Solution:** x₁ = 0.6, x₂ = 1.2, Z = 3.6")
 
 if __name__ == "__main__":
     main()
