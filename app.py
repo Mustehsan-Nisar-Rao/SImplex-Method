@@ -102,91 +102,42 @@ class SimplexSolver:
         self.num_decision_vars = 0
         self.num_constraints = 0
         self.phase = 1
+        self.use_big_m = True  # Using Big M method instead of Two-Phase
+        self.M = 1000  # Big M value
         self.iterations = []
     
     def parse_coefficients(self, input_str, expected_count):
         """Parse coefficients from user input - handles both formats"""
-        # Clean the input string
-        input_str = input_str.strip()
+        import re
         
-        # If it contains 'x', parse as mathematical expression
+        # Try to parse as expression (like 2x1+5x2)
         if 'x' in input_str.lower():
-            return self._parse_expression(input_str, expected_count)
+            # Remove spaces for expression parsing
+            input_str = input_str.replace(' ', '')
+            coeffs = [0] * expected_count
+            # Match patterns like 2x1, -3x2, x1, -x2, +5x3
+            pattern = r'([+-]?\d*\.?\d*)x(\d+)'
+            matches = re.findall(pattern, input_str.lower())
+            
+            for coeff_str, var_num in matches:
+                if coeff_str == '' or coeff_str == '+':
+                    coeff = 1
+                elif coeff_str == '-':
+                    coeff = -1
+                else:
+                    coeff = float(coeff_str)
+                
+                var_idx = int(var_num) - 1
+                if 0 <= var_idx < expected_count:
+                    coeffs[var_idx] = coeff
+            
+            return coeffs
         else:
             # Parse as space-separated numbers
-            return self._parse_space_separated(input_str, expected_count)
-    
-    def _parse_expression(self, input_str, expected_count):
-        """Parse mathematical expressions like '2x1 + 3x2 - x3'"""
-        coeffs = [0.0] * expected_count
-        
-        # Remove all spaces for easier parsing
-        clean_str = input_str.replace(' ', '')
-        
-        # Handle cases where expression starts without sign (assume positive)
-        if clean_str and clean_str[0].isdigit() or clean_str[0] == 'x':
-            clean_str = '+' + clean_str
-        
-        # Regular expression to match terms like +2x1, -3x2, +x3, -x4, etc.
-        pattern = r'([+-]?)(\d*\.?\d*)(x\d+)'
-        
-        # Find all matches
-        matches = re.finditer(pattern, clean_str)
-        
-        for match in matches:
-            sign = match.group(1) or '+'
-            number_str = match.group(2)
-            var_str = match.group(3)
-            
-            # Extract variable number
-            var_num = int(var_str[1:])  # Remove 'x' and convert to int
-            
-            # Skip if variable number is out of range
-            if var_num < 1 or var_num > expected_count:
-                continue
-            
-            # Determine coefficient value
-            if number_str == '':
-                # No number specified (e.g., +x1, -x2)
-                coeff = 1.0
-            else:
-                coeff = float(number_str)
-            
-            # Apply sign
-            if sign == '-':
-                coeff = -coeff
-            
-            # Assign to the correct position (variables are 1-indexed)
-            coeffs[var_num - 1] = coeff
-        
-        return coeffs
-    
-    def _parse_space_separated(self, input_str, expected_count):
-        """Parse space-separated numbers"""
-        if not input_str.strip():
-            return [0.0] * expected_count
-        
-        parts = input_str.split()
-        coeffs = []
-        
-        for part in parts:
-            try:
-                coeffs.append(float(part))
-            except ValueError:
-                st.error(f"Invalid number: '{part}'. Please enter valid numbers.")
-                return [0.0] * expected_count
-        
-        # Pad with zeros if not enough coefficients provided
-        if len(coeffs) < expected_count:
-            coeffs.extend([0.0] * (expected_count - len(coeffs)))
-        # Truncate if too many coefficients provided
-        elif len(coeffs) > expected_count:
-            coeffs = coeffs[:expected_count]
-        
-        return coeffs
+            return list(map(float, input_str.split()))
     
     def build_tableau(self, constraints, constraint_types, rhs_values):
-        """Build the initial simplex tableau"""
+        """Build the initial simplex tableau using Big M method"""
         slack_count = 0
         surplus_count = 0
         artificial_count = 0
@@ -201,20 +152,21 @@ class SimplexSolver:
             elif c_type == '=':
                 artificial_count += 1
         
-        self.needs_phase1 = (artificial_count > 0)
+        self.needs_artificial = (artificial_count > 0)
         
         # Build variable names
         self.var_names = [f'x{i+1}' for i in range(self.num_decision_vars)]
         
         # Add slack variables
         for i in range(slack_count):
-            self.var_names.append(f's{i+1}')
+            self.var_names.append(f'S{i+1}')
         
         # Add surplus variables
         for i in range(surplus_count):
-            self.var_names.append(f'surp{i+1}')
+            self.var_names.append(f's{i+1}')
         
         # Add artificial variables
+        artificial_start_idx = self.num_decision_vars + slack_count + surplus_count
         for i in range(artificial_count):
             self.var_names.append(f'A{i+1}')
         
@@ -256,15 +208,23 @@ class SimplexSolver:
             # Add RHS
             self.tableau[i, -1] = rhs
         
-        if self.needs_phase1:
-            # Phase 1: Minimize sum of artificial variables
+        if self.needs_artificial:
+            # Set up objective function with Big M penalty for artificial variables
+            # For maximization: Z = c1*x1 + c2*x2 + ... - M*A1 - M*A2 - ...
+            # In tableau form (as we're maximizing -Z): -c1, -c2, ..., +M, +M, ...
+            
+            for i in range(self.num_decision_vars):
+                self.tableau[-1, i] = -self.obj_coeffs[i]
+            
+            # Add Big M coefficients for artificial variables
             for i in range(artificial_count):
-                self.tableau[-1, artificial_idx + i] = -1
+                self.tableau[-1, artificial_idx + i] = self.M
             
             # Eliminate artificial variables from objective row
+            # For each artificial variable in basis, subtract M times its row from objective
             for i, basic_var in enumerate(self.basic_vars):
                 if basic_var.startswith('A'):
-                    self.tableau[-1] += self.tableau[i]
+                    self.tableau[-1] -= self.M * self.tableau[i]
         else:
             # No artificial variables, use original objective directly
             self.tableau[-1, :self.num_decision_vars] = [-c for c in self.obj_coeffs]
@@ -274,7 +234,7 @@ class SimplexSolver:
         obj_row = self.tableau[-1, :-1]
         min_val = np.min(obj_row)
         
-        if min_val >= -1e-10:  # All non-negative (with tolerance)
+        if min_val >= -1e-6:  # All non-negative (with tolerance)
             return -1  # Optimal solution reached
         
         return np.argmin(obj_row)
@@ -320,84 +280,37 @@ class SimplexSolver:
         self.basic_vars[pivot_row] = self.var_names[pivot_col]
     
     def solve_problem(self):
-        """Solve the linear programming problem"""
+        """Solve the linear programming problem using Big M method"""
         self.iterations = []  # Reset iterations
         
-        if self.needs_phase1:
-            # PHASE 1: Find initial feasible solution
-            self.phase = 1
-            iteration = 0
-            
-            # Store initial tableau
-            self.iterations.append({
-                'tableau': self.tableau.copy(),
-                'basic_vars': self.basic_vars.copy(),
-                'pivot_row': None,
-                'pivot_col': None,
-                'pivot_element': None
-            })
-            
-            while True:
-                pivot_col = self.find_pivot_column()
-                
-                if pivot_col == -1:
-                    # Phase 1 complete
-                    if abs(self.tableau[-1, -1]) > 1e-6:
-                        return False, "NO_FEASIBLE_SOLUTION"
-                    break
-                
-                pivot_row = self.find_pivot_row(pivot_col)
-                
-                if pivot_row == -1:
-                    return False, "UNBOUNDED_PHASE1"
-                
-                self.pivot(pivot_row, pivot_col)
-            
-            # Remove artificial variables and setup Phase 2
-            artificial_indices = [i for i, name in enumerate(self.var_names[:-1]) if name.startswith('A')]
-            
-            # Remove artificial variable columns
-            keep_cols = [i for i in range(len(self.var_names)) if i not in artificial_indices]
-            self.tableau = self.tableau[:, keep_cols]
-            self.var_names = [self.var_names[i] for i in keep_cols]
-            
-            # Update basic variables (remove artificial ones)
-            new_basic_vars = []
-            for var in self.basic_vars:
-                if not var.startswith('A'):
-                    new_basic_vars.append(var)
-            self.basic_vars = new_basic_vars
-            
-            # Set up Phase 2 objective function
-            self.tableau[-1, :] = 0
-            for i in range(self.num_decision_vars):
-                self.tableau[-1, i] = -self.obj_coeffs[i]
-            
-            # Eliminate basic variables from objective row
-            for i, basic_var in enumerate(self.basic_vars):
-                var_idx = self.var_names.index(basic_var)
-                if abs(self.tableau[-1, var_idx]) > 1e-10:
-                    multiplier = self.tableau[-1, var_idx]
-                    self.tableau[-1] -= multiplier * self.tableau[i]
-        
-        # PHASE 2: Optimize
-        self.phase = 2
-        
-        # Store Phase 2 initial tableau
+        # Store initial tableau
         self.iterations.append({
             'tableau': self.tableau.copy(),
             'basic_vars': self.basic_vars.copy(),
             'pivot_row': None,
             'pivot_col': None,
-            'pivot_element': None,
-            'phase': 2
+            'pivot_element': None
         })
         
+        iteration = 0
+        
         while True:
+            iteration += 1
+            
             pivot_col = self.find_pivot_column()
             
             if pivot_col == -1:
-                break
+                # Check if any artificial variables are still in basis with non-zero value
+                artificial_in_basis = False
+                for i, basic_var in enumerate(self.basic_vars):
+                    if basic_var.startswith('A') and abs(self.tableau[i, -1]) > 1e-6:
+                        artificial_in_basis = True
+                        break
+                
+                if artificial_in_basis:
+                    return False, "NO_FEASIBLE_SOLUTION"
+                
+                return True, "OPTIMAL"
             
             pivot_row = self.find_pivot_row(pivot_col)
             
@@ -405,8 +318,6 @@ class SimplexSolver:
                 return False, "UNBOUNDED"
             
             self.pivot(pivot_row, pivot_col)
-        
-        return True, "OPTIMAL"
 
 def display_problem_formulation(solver, obj_type, constraints, constraint_types, rhs_values):
     """Display the problem formulation in a nice format"""
@@ -447,7 +358,7 @@ def display_problem_formulation(solver, obj_type, constraints, constraint_types,
         constraint_str = " ".join(constraint_terms)
         st.write(f"{constraint_str} {constraint_types[i]} {rhs_values[i]:g}")
 
-def display_tableau(tableau, var_names, basic_vars, phase, iteration_num):
+def display_tableau(tableau, var_names, basic_vars, iteration_num):
     """Display a simplex tableau"""
     # Create header
     headers = ["Basic Var"] + var_names
@@ -457,14 +368,31 @@ def display_tableau(tableau, var_names, basic_vars, phase, iteration_num):
     for i in range(len(tableau) - 1):
         row_data = [basic_vars[i]]
         for val in tableau[i]:
-            row_data.append(f"{val:.4f}")
+            # Display Big M symbolically if it's very large
+            if abs(val) > 100 and any(name.startswith('A') for name in var_names):
+                if val > 0:
+                    row_data.append("+M")
+                elif val < 0:
+                    row_data.append("-M")
+                else:
+                    row_data.append(f"{val:.4f}")
+            else:
+                row_data.append(f"{val:.4f}")
         data.append(row_data)
     
     # Add objective row
-    obj_label = "w" if phase == 1 else "Z"
-    obj_row = [obj_label]
+    obj_row = ["Z"]
     for val in tableau[-1]:
-        obj_row.append(f"{val:.4f}")
+        # Display Big M symbolically if it's very large
+        if abs(val) > 100 and any(name.startswith('A') for name in var_names):
+            if val > 0:
+                obj_row.append("+M")
+            elif val < 0:
+                obj_row.append("-M")
+            else:
+                obj_row.append(f"{val:.4f}")
+        else:
+            obj_row.append(f"{val:.4f}")
     data.append(obj_row)
     
     # Create DataFrame
@@ -495,6 +423,21 @@ def display_solution(solver, obj_type):
         with cols[i % 4]:
             st.metric(f"x{i+1}", f"{value:.4f}")
     
+    # Check for artificial variables still in solution
+    artificial_vars = []
+    for i, basic_var in enumerate(solver.basic_vars):
+        if basic_var.startswith('A'):
+            value = solver.tableau[i, -1]
+            if abs(value) > 1e-6:
+                artificial_vars.append((basic_var, value))
+    
+    if artificial_vars:
+        st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+        st.write("**Warning:** Artificial variables in final solution:")
+        for var, val in artificial_vars:
+            st.write(f"{var} = {val:.4f}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
     # Display objective value
     optimal_value = solver.tableau[-1, -1]
     if not solver.is_maximization:
@@ -505,7 +448,7 @@ def display_solution(solver, obj_type):
 
 def main():
     # Header
-    st.markdown('<div class="main-header">📊 Simplex Method Solver</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">📊 Simplex Method Solver (Big M Method)</div>', unsafe_allow_html=True)
     
     # Sidebar with instructions
     with st.sidebar:
@@ -524,6 +467,11 @@ def main():
         - **Space-separated**: `2 5 1` 
         - **Mathematical expression**: `2x1 + 5x2 + x3`
         - **Mixed**: `2x1 + 3x2 - 1x3` or `2x1+3x2-1x3`
+        
+        **Big M Method:**
+        - Uses M = 1000 for artificial variables
+        - Handles >= and = constraints automatically
+        - Shows M symbolically in tableaus
         """)
         
         st.markdown("### 💡 Valid Expression Examples")
@@ -647,7 +595,7 @@ def main():
             rhs_values.append(rhs)
 
     # Solve button
-    if st.button("🚀 Solve using Simplex Method", use_container_width=True, type="primary"):
+    if st.button("🚀 Solve using Big M Method", use_container_width=True, type="primary"):
         if not obj_input.strip():
             st.error("❌ Please enter the objective function coefficients.")
             return
@@ -681,16 +629,17 @@ def main():
             
             # Solve the problem
             st.markdown("---")
-            st.markdown('<div class="sub-header">🔄 Solution Process</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sub-header">🔄 Solution Process (Big M Method)</div>', unsafe_allow_html=True)
+            
+            if solver.needs_artificial:
+                st.info(f"🤖 Using Big M Method with M = {solver.M} for artificial variables")
             
             success, message = solver.solve_problem()
             
             if not success:
                 if message == "NO_FEASIBLE_SOLUTION":
                     st.markdown('<div class="error-box">❌ No Feasible Solution Exists!</div>', unsafe_allow_html=True)
-                    st.write("The problem constraints are inconsistent and no feasible solution can be found.")
-                elif message == "UNBOUNDED_PHASE1":
-                    st.markdown('<div class="error-box">❌ Unbounded in Phase 1!</div>', unsafe_allow_html=True)
+                    st.write("Artificial variable(s) remain in basis with non-zero value. The problem constraints are inconsistent.")
                 elif message == "UNBOUNDED":
                     st.markdown('<div class="warning-box">⚠️ Unbounded Solution!</div>', unsafe_allow_html=True)
                     st.write("The objective function can be improved indefinitely without violating constraints.")
@@ -700,17 +649,13 @@ def main():
             st.markdown("### 📊 Solution Steps")
             
             for i, iteration in enumerate(solver.iterations):
-                with st.expander(f"{'Phase 1' if i == 0 or (i > 0 and 'phase' not in iteration) else 'Phase 2'} - Iteration {i}", expanded=i == len(solver.iterations)-1):
+                with st.expander(f"Iteration {i}", expanded=i == len(solver.iterations)-1):
                     if iteration['pivot_row'] is not None:
-                        st.write(f"**Pivot:** Row {iteration['pivot_row'] + 1} ({solver.basic_vars[iteration['pivot_row']] if i < len(solver.iterations)-1 else iteration['basic_vars'][iteration['pivot_row']]}), "
-                                f"Column {iteration['pivot_col'] + 1} ({solver.var_names[iteration['pivot_col']] if i < len(solver.iterations)-1 else ['x' + name for name in solver.var_names if 'x' in name][iteration['pivot_col']]})")
+                        st.write(f"**Pivot:** Row {iteration['pivot_row'] + 1} ({iteration['basic_vars'][iteration['pivot_row']]}), "
+                                f"Column {iteration['pivot_col'] + 1} ({solver.var_names[iteration['pivot_col']]})")
                         st.write(f"**Pivot Element:** {iteration['pivot_element']:.4f}")
                     
-                    phase = 1 if i == 0 or (i > 0 and 'phase' not in iteration) else 2
-                    display_tableau(iteration['tableau'], 
-                                  solver.var_names if i < len(solver.iterations)-1 else [name for name in solver.var_names if not name.startswith('A')],
-                                  iteration['basic_vars'], 
-                                  phase, i)
+                    display_tableau(iteration['tableau'], solver.var_names, iteration['basic_vars'], i)
             
             # Display final solution
             display_solution(solver, obj_type)
@@ -742,7 +687,7 @@ Constraints:
             """)
         
         with col2:
-            st.markdown("**Example 2: Minimization**")
+            st.markdown("**Example 2: Minimization with Artificial Variables**")
             st.code("""
 Minimize: Z = 4x1 + x2
 Subject to:
