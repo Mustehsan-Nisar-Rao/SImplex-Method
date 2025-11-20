@@ -55,41 +55,12 @@ st.markdown("""
         border-left: 4px solid #dc3545;
         margin: 1rem 0;
     }
-    .tableau-table {
-        width: 100%;
-        border-collapse: collapse;
-    }
-    .tableau-table th {
-        background-color: #1f77b4;
-        color: white;
-        padding: 0.5rem;
-        text-align: center;
-        border: 1px solid #ddd;
-    }
-    .tableau-table td {
-        padding: 0.5rem;
-        text-align: center;
-        border: 1px solid #ddd;
-    }
-    .tableau-table tr:nth-child(even) {
-        background-color: #f8f9fa;
-    }
-    .tableau-table tr:hover {
-        background-color: #e9ecef;
-    }
     .solution-box {
         background-color: #e7f3ff;
         padding: 1.5rem;
         border-radius: 0.5rem;
         border: 2px solid #1f77b4;
         margin: 1rem 0;
-    }
-    .iteration-box {
-        background-color: #fff8e1;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border: 1px solid #ffd54f;
-        margin: 0.5rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -101,8 +72,7 @@ class SimplexSolver:
         self.var_names = []
         self.num_decision_vars = 0
         self.num_constraints = 0
-        self.phase = 1
-        self.use_big_m = True  # Using Big M method instead of Two-Phase
+        self.use_big_m = True
         self.M = 1000  # Big M value
         self.iterations = []
     
@@ -210,9 +180,6 @@ class SimplexSolver:
         
         if self.needs_artificial:
             # Set up objective function with Big M penalty for artificial variables
-            # For maximization: Z = c1*x1 + c2*x2 + ... - M*A1 - M*A2 - ...
-            # In tableau form (as we're maximizing -Z): -c1, -c2, ..., +M, +M, ...
-            
             for i in range(self.num_decision_vars):
                 self.tableau[-1, i] = -self.obj_coeffs[i]
             
@@ -221,7 +188,6 @@ class SimplexSolver:
                 self.tableau[-1, artificial_idx + i] = self.M
             
             # Eliminate artificial variables from objective row
-            # For each artificial variable in basis, subtract M times its row from objective
             for i, basic_var in enumerate(self.basic_vars):
                 if basic_var.startswith('A'):
                     self.tableau[-1] -= self.M * self.tableau[i]
@@ -245,7 +211,10 @@ class SimplexSolver:
         for i in range(self.num_constraints):
             if self.tableau[i, pivot_col] > 1e-10:  # Positive coefficient
                 ratio = self.tableau[i, -1] / self.tableau[i, pivot_col]
-                ratios.append(ratio)
+                if ratio >= 0:  # Only consider non-negative ratios
+                    ratios.append(ratio)
+                else:
+                    ratios.append(float('inf'))
             else:
                 ratios.append(float('inf'))
         
@@ -295,8 +264,6 @@ class SimplexSolver:
         iteration = 0
         
         while True:
-            iteration += 1
-            
             pivot_col = self.find_pivot_column()
             
             if pivot_col == -1:
@@ -318,45 +285,6 @@ class SimplexSolver:
                 return False, "UNBOUNDED"
             
             self.pivot(pivot_row, pivot_col)
-
-def display_problem_formulation(solver, obj_type, constraints, constraint_types, rhs_values):
-    """Display the problem formulation in a nice format"""
-    st.markdown("---")
-    st.markdown('<div class="sub-header">📝 Problem Formulation</div>', unsafe_allow_html=True)
-    
-    # Objective function
-    obj_terms = []
-    for i, coeff in enumerate(solver.original_obj_coeffs):
-        if abs(coeff) > 1e-10:
-            if i == 0:
-                if coeff < 0:
-                    obj_terms.append(f"- {abs(coeff):g}x{i+1}")
-                else:
-                    obj_terms.append(f"{coeff:g}x{i+1}")
-            else:
-                sign = "+" if coeff >= 0 else "-"
-                obj_terms.append(f"{sign} {abs(coeff):g}x{i+1}")
-    
-    obj_str = " ".join(obj_terms)
-    st.write(f"**Objective:** {obj_type.upper()} Z = {obj_str}")
-    
-    # Constraints
-    st.write("**Subject to:**")
-    for i in range(solver.num_constraints):
-        constraint_terms = []
-        for j, coeff in enumerate(constraints[i]):
-            if abs(coeff) > 1e-10:
-                if j == 0:
-                    if coeff < 0:
-                        constraint_terms.append(f"- {abs(coeff):g}x{j+1}")
-                    else:
-                        constraint_terms.append(f"{coeff:g}x{j+1}")
-                else:
-                    sign = "+" if coeff >= 0 else "-"
-                    constraint_terms.append(f"{sign} {abs(coeff):g}x{j+1}")
-        
-        constraint_str = " ".join(constraint_terms)
-        st.write(f"{constraint_str} {constraint_types[i]} {rhs_values[i]:g}")
 
 def display_tableau(tableau, var_names, basic_vars, iteration_num):
     """Display a simplex tableau"""
@@ -447,107 +375,22 @@ def display_solution(solver, obj_type):
     st.markdown('</div>', unsafe_allow_html=True)
 
 def main():
-    # Header
     st.markdown('<div class="main-header">📊 Simplex Method Solver (Big M Method)</div>', unsafe_allow_html=True)
     
-    # Sidebar with instructions
-    with st.sidebar:
-        st.markdown("### 📖 Instructions")
-        st.markdown("""
-        **Objective Function:**
-        - Enter coefficients for decision variables
-        - Choose MAX or MIN
-        
-        **Constraints:**
-        - Use format: `coefficients inequality RHS`
-        - Example: `1 2 <= 10` means x₁ + 2x₂ ≤ 10
-        - Supported inequalities: `<=`, `>=`, `=`
-        
-        **Input Formats:**
-        - **Space-separated**: `2 5 1` 
-        - **Mathematical expression**: `2x1 + 5x2 + x3`
-        - **Mixed**: `2x1 + 3x2 - 1x3` or `2x1+3x2-1x3`
-        
-        **Big M Method:**
-        - Uses M = 1000 for artificial variables
-        - Handles >= and = constraints automatically
-        - Shows M symbolically in tableaus
-        """)
-        
-        st.markdown("### 💡 Valid Expression Examples")
-        st.markdown("""
-        - `2x1 + 3x2 - x3`
-        - `x1 - 2x2 + 5x3`
-        - `3x1+2x2-4x3` (no spaces)
-        - `-x1 + x2 - x3`
-        - `2x1 - 3x2`
-        """)
-        
-        st.markdown("### ⚠️ Common Issues")
-        st.markdown("""
-        - Don't use `*` between coefficient and variable
-        - Include `+` or `-` between terms
-        - Variable names must be `x1`, `x2`, etc.
-        - Ensure RHS values are non-negative
-        """)
-
-    # Main content
+    # Problem setup
     col1, col2 = st.columns([1, 1])
     
     with col1:
         st.markdown('<div class="sub-header">🔧 Problem Setup</div>', unsafe_allow_html=True)
+        num_vars = st.number_input("Number of Decision Variables", min_value=1, max_value=10, value=2, step=1)
+        num_constraints = st.number_input("Number of Constraints", min_value=1, max_value=10, value=2, step=1)
         
-        # Problem parameters
-        num_vars = st.number_input("Number of Decision Variables", min_value=1, max_value=10, value=2, step=1, key="num_vars")
-        num_constraints = st.number_input("Number of Constraints", min_value=1, max_value=10, value=2, step=1, key="num_constraints")
-        
-        # Objective function
         st.markdown("#### Objective Function")
-        obj_type = st.radio("Optimization Type:", ["max", "min"], horizontal=True, key="obj_type")
-        
-        obj_format = st.radio("Input Format:", ["Space-separated numbers", "Mathematical expression"], 
-                            horizontal=True, key="obj_format")
-        
-        if obj_format == "Space-separated numbers":
-            obj_input = st.text_input(
-                f"Enter coefficients for x₁ to x{num_vars}:", 
-                value="3 2",
-                help=f"Enter {num_vars} numbers separated by spaces. Example: '3 2' for 3x₁ + 2x₂",
-                key="obj_input"
-            )
-            if obj_input:
-                st.caption(f"Interpreted as: {obj_input.replace(' ', 'x₁ + ')}x{num_vars}")
-        else:
-            obj_input = st.text_input(
-                "Enter objective function:", 
-                value="3x1 + 2x2",
-                help="Example: 2x1 + 3x2 - x3 or 2x1+3x2-1x3",
-                key="obj_expr"
-            )
-            if obj_input:
-                st.caption("Make sure to use format like: 2x1 + 3x2 - x3")
-
-        # Show parsing preview
-        if obj_input:
-            try:
-                preview_solver = SimplexSolver()
-                preview_coeffs = preview_solver.parse_coefficients(obj_input, num_vars)
-                preview_terms = []
-                for i, coeff in enumerate(preview_coeffs):
-                    if abs(coeff) > 1e-10:
-                        if i == 0:
-                            preview_terms.append(f"{coeff:g}x{i+1}")
-                        else:
-                            sign = "+" if coeff >= 0 else "-"
-                            preview_terms.append(f"{sign} {abs(coeff):g}x{i+1}")
-                if preview_terms:
-                    st.info(f"**Parsed as:** {' '.join(preview_terms)}")
-            except:
-                pass
+        obj_type = st.radio("Optimization Type:", ["max", "min"], horizontal=True)
+        obj_input = st.text_input("Enter coefficients (space-separated or expression):", "600 500")
     
     with col2:
         st.markdown('<div class="sub-header">📋 Constraints</div>', unsafe_allow_html=True)
-        
         constraints = []
         constraint_types = []
         rhs_values = []
@@ -557,49 +400,17 @@ def main():
             col_a, col_b, col_c = st.columns([3, 1, 2])
             
             with col_a:
-                if obj_format == "Space-separated numbers":
-                    coeff_input = st.text_input(
-                        f"Coefficients {i+1}", 
-                        value="2 1" if i == 0 else "1 1",
-                        key=f"coeff_{i}",
-                        label_visibility="collapsed",
-                        help=f"Enter {num_vars} numbers separated by spaces"
-                    )
-                else:
-                    coeff_input = st.text_input(
-                        f"Expression {i+1}", 
-                        value="2x1 + 1x2" if i == 0 else "1x1 + 1x2",
-                        key=f"expr_{i}",
-                        label_visibility="collapsed",
-                        help="Example: 2x1 + 3x2 - x3"
-                    )
-            
+                coeff_input = st.text_input(f"Coefficients {i+1}", "2 1" if i == 0 else "1 2", key=f"coeff_{i}", label_visibility="collapsed")
             with col_b:
-                inequality = st.selectbox(
-                    "Inequality", 
-                    ["<=", ">=", "="], 
-                    key=f"ineq_{i}", 
-                    label_visibility="collapsed"
-                )
-            
+                inequality = st.selectbox("Inequality", ["<=", ">=", "="], key=f"ineq_{i}", label_visibility="collapsed")
             with col_c:
-                rhs = st.number_input(
-                    "RHS", 
-                    value=18.0 if i == 0 else 10.0, 
-                    key=f"rhs_{i}", 
-                    label_visibility="collapsed"
-                )
+                rhs = st.number_input("RHS", value=80.0 if i == 0 else 60.0, key=f"rhs_{i}", label_visibility="collapsed")
             
             constraints.append(coeff_input)
             constraint_types.append(inequality)
             rhs_values.append(rhs)
 
-    # Solve button
     if st.button("🚀 Solve using Big M Method", use_container_width=True, type="primary"):
-        if not obj_input.strip():
-            st.error("❌ Please enter the objective function coefficients.")
-            return
-            
         try:
             # Initialize solver
             solver = SimplexSolver()
@@ -623,9 +434,6 @@ def main():
             
             # Build tableau
             solver.build_tableau(parsed_constraints, constraint_types, rhs_values)
-            
-            # Display problem formulation
-            display_problem_formulation(solver, obj_type, parsed_constraints, constraint_types, rhs_values)
             
             # Solve the problem
             st.markdown("---")
@@ -662,47 +470,6 @@ def main():
             
         except Exception as e:
             st.error(f"❌ Error solving the problem: {str(e)}")
-            st.info("💡 Please check your input format. For mathematical expressions, use format like: '2x1 + 3x2 - x3'")
-
-    # Examples section
-    with st.expander("📚 Example Problems", expanded=False):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("**Example 1: Maximization**")
-            st.code("""
-Maximize: Z = 3x1 + 2x2
-Subject to:
-  2x1 + x2 ≤ 18
-  2x1 + 3x2 ≤ 42
-  3x1 + x2 ≤ 24
-  x1, x2 ≥ 0
-
-Input format (expression):
-Objective: 3x1 + 2x2
-Constraints: 
-  2x1 + 1x2 <= 18
-  2x1 + 3x2 <= 42  
-  3x1 + 1x2 <= 24
-            """)
-        
-        with col2:
-            st.markdown("**Example 2: Minimization with Artificial Variables**")
-            st.code("""
-Minimize: Z = 4x1 + x2
-Subject to:
-  3x1 + x2 = 3
-  4x1 + 3x2 ≥ 6
-  x1 + 2x2 ≤ 4
-  x1, x2 ≥ 0
-
-Input format (expression):
-Objective: 4x1 + 1x2
-Constraints:
-  3x1 + 1x2 = 3
-  4x1 + 3x2 >= 6
-  1x1 + 2x2 <= 4
-            """)
 
 if __name__ == "__main__":
     main()
